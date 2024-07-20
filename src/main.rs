@@ -1,5 +1,6 @@
 use std::io::Write;
 use colored::Colorize;
+#[allow(unused_imports)]
 use log::{debug, LevelFilter};
 
 const VS: &str = "https://www.whatbeatsrock.com/api/vs";
