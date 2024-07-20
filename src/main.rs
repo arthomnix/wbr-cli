@@ -58,7 +58,7 @@ fn main() {
     let gid = uuid::Uuid::new_v4().to_string();
     debug!("gid {gid}");
     let client = reqwest::blocking::Client::builder()
-        .user_agent("wbr-cli/0.1.0")
+        .user_agent("wbr-cli/0.1.0 (+https://github.com/arthomnix/wbr-cli)")
         .build()
         .unwrap();
 
