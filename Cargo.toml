@@ -1,0 +1,15 @@
+[package]
+name = "wbr"
+version = "0.1.0"
+edition = "2021"
+authors = [ "arthomnix" ]
+license = "MIT"
+
+[dependencies]
+reqwest = { version = "0.12", features = [ "blocking" ] }
+colored = "2.1"
+uuid = { version = "1.10", features = [ "v4" ] }
+serde = { version = "1.0", features = [ "derive" ] }
+serde_json = "1.0"
+log = "0.4"
+colog = "1.3"
