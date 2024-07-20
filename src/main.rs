@@ -25,7 +25,6 @@ struct WbrResponseInner {
     guess_wins: bool,
     guess_emoji: String,
     reason: String,
-    cached: bool,
     cache_count: Option<u64>,
 }
 
