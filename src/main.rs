@@ -2,13 +2,22 @@ use std::io::Write;
 use colored::Colorize;
 use log::{debug, LevelFilter};
 
-const API: &str = "https://www.whatbeatsrock.com/api/vs";
+const VS: &str = "https://www.whatbeatsrock.com/api/vs";
+const SCORES: &str = "https://www.whatbeatsrock.com/api/scores";
 
 #[derive(serde::Serialize, Debug, Clone)]
 struct WbrRequest {
     gid: String,
     guess: String,
     prev: String,
+}
+
+#[derive(serde::Serialize, Debug, Clone)]
+struct WbrLeaderboardRequest {
+    gid: String,
+    initials: String,
+    score: u64,
+    text: String,
 }
 
 #[derive(serde::Deserialize, Debug, Clone)]
@@ -33,7 +42,7 @@ struct WbrErrorResponse {
 fn do_guess(client: &reqwest::blocking::Client, guess: WbrRequest) -> Result<WbrResponseInner, WbrErrorResponse> {
     let json = serde_json::to_string(&guess).unwrap();
     debug!("request {json}");
-    let response = client.post(API)
+    let response = client.post(VS)
         .header("Content-Type", "application/json")
         .body(json)
         .send()
@@ -44,6 +53,19 @@ fn do_guess(client: &reqwest::blocking::Client, guess: WbrRequest) -> Result<Wbr
     serde_json::from_str::<WbrResponse>(&response)
         .map_err(|_| serde_json::from_str::<WbrErrorResponse>(&response).unwrap())
         .map(|response| response.data)
+}
+
+fn submit_score(client: &reqwest::blocking::Client, request: WbrLeaderboardRequest) {
+    let json = serde_json::to_string(&request).unwrap();
+    debug!("leaderboard request {json}");
+    let response = client.post(SCORES)
+        .header("Content-Type", "application/json")
+        .body(json)
+        .send()
+        .unwrap()
+        .text()
+        .unwrap();
+    debug!("leaderboard response {response}")
 }
 
 fn main() {
@@ -100,6 +122,35 @@ fn main() {
             println!("{} {} {} {} {}{}", guess.bold().red(), response.guess_emoji.bold().red(), "does not beat".red(), prev_guess.bold().red(), prev_emoji.bold().red(), "!".red());
             println!("{}", response.reason.red());
             println!("{} {} {}", "You made".blue(), count.to_string().bold().blue(), "correct guesses".blue());
+
+            print!("{}", "Would you like to submit to the leaderboard? [y/N] ".blue());
+            stdout.flush().unwrap();
+            let mut buf = String::new();
+            stdin.read_line(&mut buf).unwrap();
+            if !buf.to_lowercase().starts_with('y') {
+                break;
+            }
+
+            let initials = loop {
+                print!("{}", "Enter leaderboard initials (3 characters): ".blue());
+                stdout.flush().unwrap();
+                buf.clear();
+                stdin.read_line(&mut buf).unwrap();
+                let buf = buf.trim().to_string();
+                if buf.chars().count() == 3 {
+                    break buf;
+                }
+                print!("{}", "Must be 3 characters!".red());
+            };
+
+            let leaderboard_request = WbrLeaderboardRequest {
+                gid: gid.clone(),
+                initials,
+                score: count,
+                text: format!("{guess} {} did not beat {prev_guess} {prev_emoji}", response.guess_emoji),
+            };
+            submit_score(&client, leaderboard_request);
+
             break;
         }
 
