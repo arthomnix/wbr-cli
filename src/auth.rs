@@ -79,6 +79,7 @@ pub(crate) fn get_session_cookies(client: &reqwest::blocking::Client) -> Vec<Aut
 
 pub(crate) fn auth_prompt(accounts: Vec<AuthInfo>) -> Option<AuthInfo> {
     if accounts.len() == 0 {
+        println!("If you want to use an account, log in at https://www.whatbeatsrock.com/login in your web browser!");
         return None;
     }
 
