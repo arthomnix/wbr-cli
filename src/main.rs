@@ -1,7 +1,12 @@
+mod auth;
+
 use std::io::Write;
+use std::sync::Arc;
 use colored::Colorize;
 #[allow(unused_imports)]
 use log::{debug, LevelFilter};
+use url::Url;
+use crate::auth::{AUTH_COOKIE_NAME, auth_prompt, get_session_cookies};
 
 const VS: &str = "https://www.whatbeatsrock.com/api/vs";
 const SCORES: &str = "https://www.whatbeatsrock.com/api/scores";
@@ -17,6 +22,13 @@ struct WbrRequest {
 struct WbrLeaderboardRequest {
     gid: String,
     initials: String,
+    score: u64,
+    text: String,
+}
+
+#[derive(serde::Serialize, Debug, Clone)]
+struct WbrAuthenticatedLeaderboardRequest {
+    gid: String,
     score: u64,
     text: String,
 }
@@ -68,6 +80,26 @@ fn submit_score(client: &reqwest::blocking::Client, request: WbrLeaderboardReque
     debug!("leaderboard response {response}")
 }
 
+fn submit_score_authenticated(client: &reqwest::blocking::Client, request: WbrAuthenticatedLeaderboardRequest) {
+    let json = serde_json::to_string(&request).unwrap();
+    debug!("leaderboard request {json}");
+    let response = client.post(SCORES)
+        .header("Content-Type", "application/json")
+        .body(json)
+        .send()
+        .unwrap()
+        .text()
+        .unwrap();
+    debug!("leaderboard response {response}")
+}
+
+fn read_yes_no_prompt() -> bool {
+    std::io::stdout().flush().unwrap();
+    let mut buf = String::new();
+    std::io::stdin().read_line(&mut buf).unwrap();
+    buf.to_lowercase().starts_with('y')
+}
+
 fn main() {
     #[cfg(debug_assertions)]
     colog::default_builder()
@@ -75,14 +107,29 @@ fn main() {
         .init();
 
     #[cfg(not(debug_assertions))]
-    colog::init();
+    colog::default_builder()
+        .filter_level(LevelFilter::Warn)
+        .init();
 
-    let gid = uuid::Uuid::new_v4().to_string();
+    let mut gid = uuid::Uuid::new_v4().to_string();
     debug!("gid {gid}");
+    let cookie_jar = Arc::new(reqwest::cookie::Jar::default());
     let client = reqwest::blocking::Client::builder()
         .user_agent(format!("wbr-cli/{} (+https://github.com/arthomnix/wbr-cli)", env!("CARGO_PKG_VERSION")))
+        .cookie_provider(Arc::clone(&cookie_jar))
         .build()
         .unwrap();
+
+    let accounts = get_session_cookies(&client);
+    let uid = if let Some(account) = auth_prompt(accounts) {
+        cookie_jar.add_cookie_str(
+            &format!("{}={}; Domain=www.whatbeatsrock.com; SameSite=Lax;", AUTH_COOKIE_NAME, account.auth_cookie),
+            &"https://www.whatbeatsrock.com".parse::<Url>().unwrap()
+        );
+        Some(account.user_id)
+    } else {
+        None
+    };
 
     let mut prev_guess = "rock".to_string();
     let mut prev_emoji = "🪨".to_string();
@@ -124,34 +171,51 @@ fn main() {
             println!("{} {} {}", "You made".blue(), count.to_string().bold().blue(), "correct guesses".blue());
 
             print!("{}", "Would you like to submit to the leaderboard? [y/N] ".blue());
-            stdout.flush().unwrap();
-            let mut buf = String::new();
-            stdin.read_line(&mut buf).unwrap();
-            if !buf.to_lowercase().starts_with('y') {
-                break;
+            if read_yes_no_prompt() {
+                if uid.is_some() {
+                    let leaderboard_request = WbrAuthenticatedLeaderboardRequest {
+                        gid: gid.clone(),
+                        score: count,
+                        text: format!("{guess} {} did not beat {prev_guess} {prev_emoji}", response.guess_emoji),
+                    };
+                    submit_score_authenticated(&client, leaderboard_request);
+                } else {
+                    let mut buf = String::new();
+                    let initials = loop {
+                        print!("{}", "Enter leaderboard initials (3 characters): ".blue());
+                        stdout.flush().unwrap();
+                        buf.clear();
+                        stdin.read_line(&mut buf).unwrap();
+                        let buf = buf.trim().to_string();
+                        if buf.chars().count() == 3 {
+                            break buf;
+                        }
+                        print!("{}", "Must be 3 characters!".red());
+                    };
+
+                    let leaderboard_request = WbrLeaderboardRequest {
+                        gid: gid.clone(),
+                        initials,
+                        score: count,
+                        text: format!("{guess} {} did not beat {prev_guess} {prev_emoji}", response.guess_emoji),
+                    };
+                    submit_score(&client, leaderboard_request);
+                }
             }
 
-            let initials = loop {
-                print!("{}", "Enter leaderboard initials (3 characters): ".blue());
-                stdout.flush().unwrap();
-                buf.clear();
-                stdin.read_line(&mut buf).unwrap();
-                let buf = buf.trim().to_string();
-                if buf.chars().count() == 3 {
-                    break buf;
-                }
-                print!("{}", "Must be 3 characters!".red());
-            };
+            print!("{}", "Play again? [y/N] ".blue());
+            if read_yes_no_prompt() {
+                prev_guess = "rock".to_string();
+                prev_emoji = "🪨".to_string();
+                count = 0;
 
-            let leaderboard_request = WbrLeaderboardRequest {
-                gid: gid.clone(),
-                initials,
-                score: count,
-                text: format!("{guess} {} did not beat {prev_guess} {prev_emoji}", response.guess_emoji),
-            };
-            submit_score(&client, leaderboard_request);
+                gid = uuid::Uuid::new_v4().to_string();
+                debug!("restart gid {gid}");
 
-            break;
+                continue;
+            } else {
+                break;
+            }
         }
 
         prev_guess = guess;
