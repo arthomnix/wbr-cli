@@ -93,11 +93,15 @@ fn submit_score_authenticated(client: &reqwest::blocking::Client, request: WbrAu
     debug!("leaderboard response {response}")
 }
 
-fn read_yes_no_prompt() -> bool {
+fn read_yes_no_prompt(default_no: bool) -> bool {
     std::io::stdout().flush().unwrap();
     let mut buf = String::new();
     std::io::stdin().read_line(&mut buf).unwrap();
-    buf.to_lowercase().starts_with('y')
+    if default_no {
+        buf.to_lowercase().starts_with('y')
+    } else {
+        !buf.to_lowercase().starts_with('n')
+    }
 }
 
 fn main() {
@@ -171,7 +175,7 @@ fn main() {
             println!("{} {} {}", "You made".blue(), count.to_string().bold().blue(), "correct guesses".blue());
 
             print!("{}", "Would you like to submit to the leaderboard? [y/N] ".blue());
-            if read_yes_no_prompt() {
+            if read_yes_no_prompt(true) {
                 if uid.is_some() {
                     let leaderboard_request = WbrAuthenticatedLeaderboardRequest {
                         gid: gid.clone(),
@@ -204,7 +208,7 @@ fn main() {
             }
 
             print!("{}", "Play again? [y/N] ".blue());
-            if read_yes_no_prompt() {
+            if read_yes_no_prompt(true) {
                 prev_guess = "rock".to_string();
                 prev_emoji = "🪨".to_string();
                 count = 0;

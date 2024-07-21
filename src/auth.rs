@@ -85,8 +85,8 @@ pub(crate) fn auth_prompt(accounts: Vec<AuthInfo>) -> Option<AuthInfo> {
 
     if accounts.len() == 1 {
         println!("Found logged in account: @{}", accounts[0].username);
-        print!("Use this account? [Y/n]");
-        if read_yes_no_prompt() {
+        print!("Use this account? [Y/n] ");
+        if read_yes_no_prompt(false) {
             Some(accounts[0].clone())
         } else {
             None
