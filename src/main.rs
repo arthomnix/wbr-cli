@@ -5,11 +5,16 @@ use std::sync::Arc;
 use colored::Colorize;
 #[allow(unused_imports)]
 use log::{debug, LevelFilter};
-use url::Url;
-use crate::auth::{AUTH_COOKIE_NAME, auth_prompt, get_session_cookies};
+use crate::auth::{add_auth_cookie, auth_prompt, get_session_cookies};
 
-const VS: &str = "https://www.whatbeatsrock.com/api/vs";
-const SCORES: &str = "https://www.whatbeatsrock.com/api/scores";
+
+const WBR_API_BASE: &str = "https://www.whatbeatsrock.com/api/";
+const VS: &str = "vs";
+const SCORES: &str = "scores";
+
+pub(crate) fn endpoint_url(endpoint: &str) -> String {
+    WBR_API_BASE.to_owned() + endpoint
+}
 
 #[derive(serde::Serialize, Debug, Clone)]
 struct WbrRequest {
@@ -54,7 +59,7 @@ struct WbrErrorResponse {
 fn do_guess(client: &reqwest::blocking::Client, guess: WbrRequest) -> Result<WbrResponseInner, WbrErrorResponse> {
     let json = serde_json::to_string(&guess).unwrap();
     debug!("request {json}");
-    let response = client.post(VS)
+    let response = client.post(endpoint_url(VS))
         .header("Content-Type", "application/json")
         .body(json)
         .send()
@@ -70,7 +75,7 @@ fn do_guess(client: &reqwest::blocking::Client, guess: WbrRequest) -> Result<Wbr
 fn submit_score(client: &reqwest::blocking::Client, request: WbrLeaderboardRequest) {
     let json = serde_json::to_string(&request).unwrap();
     debug!("leaderboard request {json}");
-    let response = client.post(SCORES)
+    let response = client.post(endpoint_url(SCORES))
         .header("Content-Type", "application/json")
         .body(json)
         .send()
@@ -83,7 +88,7 @@ fn submit_score(client: &reqwest::blocking::Client, request: WbrLeaderboardReque
 fn submit_score_authenticated(client: &reqwest::blocking::Client, request: WbrAuthenticatedLeaderboardRequest) {
     let json = serde_json::to_string(&request).unwrap();
     debug!("leaderboard request {json}");
-    let response = client.post(SCORES)
+    let response = client.post(endpoint_url(SCORES))
         .header("Content-Type", "application/json")
         .body(json)
         .send()
@@ -124,12 +129,9 @@ fn main() {
         .build()
         .unwrap();
 
-    let accounts = get_session_cookies(&client);
+    let accounts = get_session_cookies(&client, &cookie_jar);
     let uid = if let Some(account) = auth_prompt(accounts) {
-        cookie_jar.add_cookie_str(
-            &format!("{}={}; Domain=www.whatbeatsrock.com; SameSite=Lax;", AUTH_COOKIE_NAME, account.auth_cookie),
-            &"https://www.whatbeatsrock.com".parse::<Url>().unwrap()
-        );
+        add_auth_cookie(&cookie_jar, &account.auth_cookie);
         Some(account.user_id)
     } else {
         None

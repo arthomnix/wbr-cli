@@ -1,28 +1,27 @@
 use std::io::Write;
 use std::str::FromStr;
 use log::debug;
-use crate::read_yes_no_prompt;
+use url::Url;
+use crate::{endpoint_url, read_yes_no_prompt};
 
 const USER: &str = "https://xrrlbpmfxuxumxqbccxz.supabase.co/auth/v1/user";
 const SUPABASE_KEY: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhycmxicG1meHV4dW14cWJjY3h6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE2OTIyMzc2NTAsImV4cCI6MjAwNzgxMzY1MH0.8Xae0-VrRVKTGmMSJt2o0WGL6Q5NXgWdAyASsXEjv4E";
-pub(crate) const AUTH_COOKIE_NAME: &str = "sb-xrrlbpmfxuxumxqbccxz-auth-token";
-
-
-#[derive(serde::Deserialize, Clone, Debug)]
-struct SupabaseCustomClaims {
-    global_name: String,
-}
-
-#[derive(serde::Deserialize, Clone, Debug)]
-struct SupabaseUserMetadata {
-    custom_claims: SupabaseCustomClaims,
-}
+const AUTH_COOKIE_NAME: &str = "sb-xrrlbpmfxuxumxqbccxz-auth-token";
 
 #[derive(serde::Deserialize, Clone, Debug)]
 struct SupabaseUserResponse {
     id: String,
     role: String,
-    user_metadata: SupabaseUserMetadata,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+struct WbrProfileResponseInner {
+    handle: String,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+struct WbrProfileResponse {
+    data: WbrProfileResponseInner,
 }
 
 #[derive(Clone, Debug)]
@@ -32,7 +31,14 @@ pub(crate) struct AuthInfo {
     pub(crate) auth_cookie: String,
 }
 
-pub(crate) fn get_session_cookies(client: &reqwest::blocking::Client) -> Vec<AuthInfo> {
+pub(crate) fn add_auth_cookie(jar: &reqwest::cookie::Jar, cookie: &str) {
+    jar.add_cookie_str(
+        &format!("{}={}; Domain=www.whatbeatsrock.com; SameSite=Lax;", AUTH_COOKIE_NAME, cookie),
+        &"https://www.whatbeatsrock.com".parse::<Url>().unwrap()
+    );
+}
+
+pub(crate) fn get_session_cookies(client: &reqwest::blocking::Client, jar: &reqwest::cookie::Jar) -> Vec<AuthInfo> {
     rookie::load(Some(vec!["www.whatbeatsrock.com".to_string()]))
         .unwrap()
         .into_iter()
@@ -62,17 +68,35 @@ pub(crate) fn get_session_cookies(client: &reqwest::blocking::Client) -> Vec<Aut
                 },
             };
 
-            if &user_info.role != "authenticated" {
+            if !(&user_info.role == "authenticated") {
                 debug!("user not authenticated");
-                None
-            } else {
-                debug!("found user id {} username {}", user_info.id, user_info.user_metadata.custom_claims.global_name);
-                Some(AuthInfo {
-                    username: user_info.user_metadata.custom_claims.global_name,
-                    user_id: user_info.id,
-                    auth_cookie: cookie.value,
-                })
+                return None;
             }
+
+            add_auth_cookie(&jar, &decoded);
+
+            let profile = match client.get(endpoint_url(&format!("users/{}/profile", &user_info.id)))
+                .send()
+                .map(|r| {
+                    let text = r.text();
+                    debug!("{text:?}");
+                    text.map(|t| serde_json::from_str::<WbrProfileResponse>(&t))
+                })
+            {
+                Ok(Ok(Ok(profile))) => profile,
+                _ => {
+                    debug!("get profile failed");
+                    return None;
+                },
+            };
+
+            debug!("found user id {} username {}", &user_info.id, &profile.data.handle);
+
+            Some(AuthInfo {
+                username: profile.data.handle,
+                user_id: user_info.id,
+                auth_cookie: decoded.to_string(),
+            })
         })
         .collect::<Vec<AuthInfo>>()
 }
