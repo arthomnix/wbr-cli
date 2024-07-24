@@ -1,115 +1,92 @@
 mod auth;
+mod api;
 
 use std::io::Write;
 use std::sync::Arc;
+use clap::Parser;
 use colored::Colorize;
-#[allow(unused_imports)]
+use color_eyre::eyre::Result;
 use log::{debug, LevelFilter};
-use crate::auth::{add_auth_cookie, auth_prompt, get_session_cookies};
+use crate::api::{do_guess, submit_score, submit_score_authenticated, WbrAuthenticatedLeaderboardRequest, WbrLeaderboardRequest, WbrGameRequest, WbrGameResponseInner, get_custom_game, WbrCustomGameRequest, do_custom_guess};
+use crate::auth::{add_auth_cookie, auth_prompt, get_session_cookies, get_user_id};
 
-
-const WBR_API_BASE: &str = "https://www.whatbeatsrock.com/api/";
-const VS: &str = "vs";
-const SCORES: &str = "scores";
-
-pub(crate) fn endpoint_url(endpoint: &str) -> String {
-    WBR_API_BASE.to_owned() + endpoint
+#[derive(Parser, Debug)]
+#[command(version)]
+struct Args {
+    #[arg(short, long)]
+    custom_username: Option<String>,
 }
 
-#[derive(serde::Serialize, Debug, Clone)]
-struct WbrRequest {
-    gid: String,
-    guess: String,
-    prev: String,
-}
-
-#[derive(serde::Serialize, Debug, Clone)]
-struct WbrLeaderboardRequest {
-    gid: String,
-    initials: String,
-    score: u64,
-    text: String,
-}
-
-#[derive(serde::Serialize, Debug, Clone)]
-struct WbrAuthenticatedLeaderboardRequest {
-    gid: String,
-    score: u64,
-    text: String,
-}
-
-#[derive(serde::Deserialize, Debug, Clone)]
-struct WbrResponseInner {
-    guess_wins: bool,
-    guess_emoji: String,
-    reason: String,
-    cache_count: Option<u64>,
-}
-
-#[derive(serde::Deserialize, Debug, Clone)]
-struct WbrResponse {
-    data: WbrResponseInner,
-}
-
-#[derive(serde::Deserialize, Debug, Clone)]
-struct WbrErrorResponse {
-    error: String,
-}
-
-fn do_guess(client: &reqwest::blocking::Client, guess: WbrRequest) -> Result<WbrResponseInner, WbrErrorResponse> {
-    let json = serde_json::to_string(&guess).unwrap();
-    debug!("request {json}");
-    let response = client.post(endpoint_url(VS))
-        .header("Content-Type", "application/json")
-        .body(json)
-        .send()
-        .unwrap()
-        .text()
-        .unwrap();
-    debug!("response {response}");
-    serde_json::from_str::<WbrResponse>(&response)
-        .map_err(|_| serde_json::from_str::<WbrErrorResponse>(&response).unwrap())
-        .map(|response| response.data)
-}
-
-fn submit_score(client: &reqwest::blocking::Client, request: WbrLeaderboardRequest) {
-    let json = serde_json::to_string(&request).unwrap();
-    debug!("leaderboard request {json}");
-    let response = client.post(endpoint_url(SCORES))
-        .header("Content-Type", "application/json")
-        .body(json)
-        .send()
-        .unwrap()
-        .text()
-        .unwrap();
-    debug!("leaderboard response {response}")
-}
-
-fn submit_score_authenticated(client: &reqwest::blocking::Client, request: WbrAuthenticatedLeaderboardRequest) {
-    let json = serde_json::to_string(&request).unwrap();
-    debug!("leaderboard request {json}");
-    let response = client.post(endpoint_url(SCORES))
-        .header("Content-Type", "application/json")
-        .body(json)
-        .send()
-        .unwrap()
-        .text()
-        .unwrap();
-    debug!("leaderboard response {response}")
-}
-
-fn read_yes_no_prompt(default_no: bool) -> bool {
-    std::io::stdout().flush().unwrap();
+fn read_yes_no_prompt(default_no: bool) -> Result<bool> {
+    std::io::stdout().flush()?;
     let mut buf = String::new();
-    std::io::stdin().read_line(&mut buf).unwrap();
-    if default_no {
+    std::io::stdin().read_line(&mut buf)?;
+    Ok(if default_no {
         buf.to_lowercase().starts_with('y')
     } else {
         !buf.to_lowercase().starts_with('n')
+    })
+}
+
+struct GameResult {
+    score: u64,
+    guess: String,
+    emoji: String,
+    prev_guess: String,
+    prev_emoji: String,
+}
+
+fn do_game(display_cache: bool, start_guess: &str, start_emoji: &str, judging_criteria_win: &str, judging_criteria_loss: &str, callback: impl Fn(&str, &str) -> Result<WbrGameResponseInner>) -> Result<GameResult> {
+    let mut count: u64 = 0;
+    let mut prev_guess = start_guess.to_string();
+    let mut prev_emoji = start_emoji.to_string();
+
+    loop {
+        let (guess, response) = loop {
+            print!("{} {} {} {}{} ", "What".blue(), judging_criteria_win.blue(), prev_guess.bold().blue(), prev_emoji.bold().blue(), "?".blue());
+            std::io::stdout().flush()?;
+            let mut guess = String::new();
+            std::io::stdin().read_line(&mut guess)?;
+            guess = guess.trim().to_string();
+
+            match callback(&guess, &prev_guess) {
+                Ok(response) => break (guess, response),
+                Err(e) => eprintln!("{} {}", "API error:".red(), e.to_string().red()),
+            };
+        };
+
+        if response.guess_wins {
+            println!("{} {} {} {} {}{}", guess.bold().green(), response.guess_emoji.bold().green(), judging_criteria_win.green(), prev_guess.bold().green(), prev_emoji.bold().green(), "!".green());
+            println!("{}", response.reason.green());
+            if display_cache {
+                if let Some(n) = response.cache_count {
+                    println!("{} {}", n.to_string().bold().green(), "others guessed this too!".green());
+                } else {
+                    println!("{}", "You're the first person to guess this!".green());
+                }
+            }
+            count += 1;
+        } else {
+            println!("{} {} {} {} {}{}", guess.bold().red(), response.guess_emoji.bold().red(), judging_criteria_loss.red(), prev_guess.bold().red(), prev_emoji.bold().red(), "!".red());
+            println!("{}", response.reason.red());
+            println!("{} {} {}", "You made".blue(), count.to_string().bold().blue(), "correct guesses".blue());
+            break Ok(GameResult {
+                score: count,
+                guess,
+                emoji: response.guess_emoji,
+                prev_guess,
+                prev_emoji
+            });
+        }
+
+        prev_guess = guess;
+        prev_emoji = response.guess_emoji;
     }
 }
 
-fn main() {
+fn main() -> Result<()> {
+    color_eyre::install()?;
+
     #[cfg(debug_assertions)]
     colog::default_builder()
         .filter_level(LevelFilter::Debug)
@@ -120,78 +97,89 @@ fn main() {
         .filter_level(LevelFilter::Warn)
         .init();
 
-    let mut gid = uuid::Uuid::new_v4().to_string();
-    debug!("gid {gid}");
+    let args = Args::parse();
+
     let cookie_jar = Arc::new(reqwest::cookie::Jar::default());
     let client = reqwest::blocking::Client::builder()
         .user_agent(format!("wbr-cli/{} (+https://github.com/arthomnix/wbr-cli)", env!("CARGO_PKG_VERSION")))
         .cookie_provider(Arc::clone(&cookie_jar))
-        .build()
-        .unwrap();
+        .build()?;
 
-    let accounts = get_session_cookies(&client, &cookie_jar);
-    let uid = if let Some(account) = auth_prompt(accounts) {
+    let accounts = get_session_cookies(&client, &cookie_jar)?;
+    let uid = if let Some(account) = auth_prompt(accounts)? {
         add_auth_cookie(&cookie_jar, &account.auth_cookie);
         Some(account.user_id)
     } else {
         None
     };
 
-    let mut prev_guess = "rock".to_string();
-    let mut prev_emoji = "🪨".to_string();
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
-    let mut count = 0;
+    if let Some(custom_username) = args.custom_username {
+        let username = custom_username.strip_prefix('@').unwrap_or(&custom_username);
+        let oid = get_user_id(&client, username)?;
+        debug!("custom game oid {oid}");
 
-    loop {
-        let (guess, response) = loop {
-            print!("{} {} {}{} ", "What beats".blue(), prev_guess.bold().blue(), prev_emoji.bold().blue(), "?".blue());
-            stdout.flush().unwrap();
-            let mut guess = String::new();
-            stdin.read_line(&mut guess).unwrap();
-            guess = guess.trim().to_string();
+        let game_info = get_custom_game(&client, &oid)?;
+        println!("{} {}{}", "Loaded custom game".blue(), game_info.title.bold().blue(), "!".blue());
 
-            let request = WbrRequest {
-                gid: gid.clone(),
-                guess: guess.clone(),
-                prev: prev_guess.clone(),
-            };
-            match do_guess(&client, request) {
-                Ok(response) => break (guess, response),
-                Err(e) => eprintln!("{} {}", "API error:".red(), e.error.red()),
-            };
-        };
+        loop {
+            do_game(
+                false,
+                &game_info.start_word,
+                &game_info.start_emoji,
+                &game_info.judging_criteria,
+                &game_info.judging_criteria_loss,
+                |guess, prev_guess| {
+                    let request = WbrCustomGameRequest {
+                        oid: oid.clone(),
+                        guess: guess.to_string(),
+                        prev: prev_guess.to_string(),
+                    };
+                    do_custom_guess(&client, request)
+                }
+            )?;
 
-        if response.guess_wins {
-            println!("{} {} {} {} {}{}", guess.bold().green(), response.guess_emoji.bold().green(), "beats".green(), prev_guess.bold().green(), prev_emoji.bold().green(), "!".green());
-            println!("{}", response.reason.green());
-            if let Some(n) = response.cache_count {
-                println!("{} {}", n.to_string().bold().green(), "others guessed this too!".green());
-            } else {
-                println!("{}", "You're the first person to guess this!".green());
+            print!("{}", "Play again? [y/N] ".blue());
+            if !read_yes_no_prompt(true)? {
+                break;
             }
-            count += 1;
-        } else {
-            println!("{} {} {} {} {}{}", guess.bold().red(), response.guess_emoji.bold().red(), "does not beat".red(), prev_guess.bold().red(), prev_emoji.bold().red(), "!".red());
-            println!("{}", response.reason.red());
-            println!("{} {} {}", "You made".blue(), count.to_string().bold().blue(), "correct guesses".blue());
+        }
+    } else {
+        let mut gid = uuid::Uuid::new_v4().to_string();
+        debug!("gid {gid}");
+
+        loop {
+            let result = do_game(
+                true,
+                "rock",
+                "🪨",
+                "beats",
+                "does not beat",
+                |guess, prev_guess| {
+                    let request = WbrGameRequest {
+                        gid: gid.clone(),
+                        guess: guess.to_string(),
+                        prev: prev_guess.to_string(),
+                    };
+                    do_guess(&client, request)
+                }
+            )?;
 
             print!("{}", "Would you like to submit to the leaderboard? [y/N] ".blue());
-            if read_yes_no_prompt(true) {
+            if read_yes_no_prompt(true)? {
                 if uid.is_some() {
                     let leaderboard_request = WbrAuthenticatedLeaderboardRequest {
                         gid: gid.clone(),
-                        score: count,
-                        text: format!("{guess} {} did not beat {prev_guess} {prev_emoji}", response.guess_emoji),
+                        score: result.score,
+                        text: format!("{} {} did not beat {} {}", result.guess, result.emoji, result.prev_guess, result.prev_emoji),
                     };
-                    submit_score_authenticated(&client, leaderboard_request);
+                    submit_score_authenticated(&client, leaderboard_request)?;
                 } else {
                     let mut buf = String::new();
                     let initials = loop {
                         print!("{}", "Enter leaderboard initials (3 characters): ".blue());
-                        stdout.flush().unwrap();
+                        std::io::stdout().flush()?;
                         buf.clear();
-                        stdin.read_line(&mut buf).unwrap();
+                        std::io::stdin().read_line(&mut buf)?;
                         let buf = buf.trim().to_string();
                         if buf.chars().count() == 3 {
                             break buf;
@@ -202,29 +190,22 @@ fn main() {
                     let leaderboard_request = WbrLeaderboardRequest {
                         gid: gid.clone(),
                         initials,
-                        score: count,
-                        text: format!("{guess} {} did not beat {prev_guess} {prev_emoji}", response.guess_emoji),
+                        score: result.score,
+                        text: format!("{} {} did not beat {} {}", result.guess, result.emoji, result.prev_guess, result.prev_emoji),
                     };
-                    submit_score(&client, leaderboard_request);
+                    submit_score(&client, leaderboard_request)?;
                 }
             }
 
             print!("{}", "Play again? [y/N] ".blue());
-            if read_yes_no_prompt(true) {
-                prev_guess = "rock".to_string();
-                prev_emoji = "🪨".to_string();
-                count = 0;
-
-                gid = uuid::Uuid::new_v4().to_string();
-                debug!("restart gid {gid}");
-
-                continue;
-            } else {
+            if !read_yes_no_prompt(true)? {
                 break;
             }
-        }
 
-        prev_guess = guess;
-        prev_emoji = response.guess_emoji;
+            // New gid for new game
+            gid = uuid::Uuid::new_v4().to_string();
+        }
     }
+
+    Ok(())
 }
