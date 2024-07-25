@@ -6,25 +6,25 @@ use color_eyre::eyre::Result;
 use crate::read_yes_no_prompt;
 use crate::api::{api_get, endpoint_url};
 
-const USER: &str = "https://xrrlbpmfxuxumxqbccxz.supabase.co/auth/v1/user";
+const SB_USER_ENDPOINT: &str = "https://xrrlbpmfxuxumxqbccxz.supabase.co/auth/v1/user";
 const SUPABASE_KEY: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhycmxicG1meHV4dW14cWJjY3h6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE2OTIyMzc2NTAsImV4cCI6MjAwNzgxMzY1MH0.8Xae0-VrRVKTGmMSJt2o0WGL6Q5NXgWdAyASsXEjv4E";
 const AUTH_COOKIE_NAME: &str = "sb-xrrlbpmfxuxumxqbccxz-auth-token";
 
 #[derive(serde::Deserialize, Clone, Debug)]
-struct SupabaseUserResponse {
+struct UserResponse {
     id: String,
     role: String,
 }
 
 #[derive(serde::Deserialize, Clone, Debug)]
-struct WbrProfileResponseInner {
+struct ProfileResponseInner {
     id: String,
     handle: String,
 }
 
 #[derive(serde::Deserialize, Clone, Debug)]
-struct WbrProfileResponse {
-    data: WbrProfileResponseInner,
+struct ProfileResponse {
+    data: ProfileResponseInner,
 }
 
 #[derive(Clone, Debug)]
@@ -36,7 +36,7 @@ pub(crate) struct AuthInfo {
 
 pub(crate) fn get_user_id(client: &reqwest::blocking::Client, handle: &str) -> Result<String> {
     let response = api_get(client, &format!("users?handle={handle}"))?;
-    let profile = serde_json::from_str::<WbrProfileResponse>(&response)?;
+    let profile = serde_json::from_str::<ProfileResponse>(&response)?;
     Ok(profile.data.id)
 }
 
@@ -59,14 +59,14 @@ pub(crate) fn get_session_cookies(client: &reqwest::blocking::Client, jar: &reqw
             let decoded = urlencoding::decode(&cookie.value).ok()?;
             debug!("{decoded}");
             let token_parts = serde_json::from_str::<Vec<Option<String>>>(&decoded).ok()?;
-            let user_info = match client.get(USER)
+            let user_info = match client.get(SB_USER_ENDPOINT)
                 .header("apikey", SUPABASE_KEY)
                 .bearer_auth(token_parts[0].as_ref()?)
                 .send()
                 .map(|r| {
                     let text = r.text();
                     debug!("{text:?}");
-                    text.map(|t| serde_json::from_str::<SupabaseUserResponse>(&t))
+                    text.map(|t| serde_json::from_str::<UserResponse>(&t))
                 })
             {
                 Ok(Ok(Ok(user_info))) => user_info,
@@ -88,7 +88,7 @@ pub(crate) fn get_session_cookies(client: &reqwest::blocking::Client, jar: &reqw
                 .map(|r| {
                     let text = r.text();
                     debug!("{text:?}");
-                    text.map(|t| serde_json::from_str::<WbrProfileResponse>(&t))
+                    text.map(|t| serde_json::from_str::<ProfileResponse>(&t))
                 })
             {
                 Ok(Ok(Ok(profile))) => profile,

@@ -6,8 +6,9 @@ use std::sync::Arc;
 use clap::Parser;
 use colored::Colorize;
 use color_eyre::eyre::Result;
+use color_eyre::owo_colors::OwoColorize;
 use log::{debug, LevelFilter};
-use crate::api::{do_guess, submit_score, submit_score_authenticated, WbrAuthenticatedLeaderboardRequest, WbrLeaderboardRequest, WbrGameRequest, WbrGameResponseInner, get_custom_game, WbrCustomGameRequest, do_custom_guess};
+use crate::api::{do_guess, submit_score, submit_score_authenticated, AuthenticatedLeaderboardRequest, LeaderboardRequest, GameRequest, GameResponseInner, get_custom_game, CustomGameRequest, do_custom_guess, like_custom_game};
 use crate::auth::{add_auth_cookie, auth_prompt, get_session_cookies, get_user_id};
 
 #[derive(Parser, Debug)]
@@ -36,7 +37,7 @@ struct GameResult {
     prev_emoji: String,
 }
 
-fn do_game(display_cache: bool, start_guess: &str, start_emoji: &str, judging_criteria_win: &str, judging_criteria_loss: &str, callback: impl Fn(&str, &str) -> Result<WbrGameResponseInner>) -> Result<GameResult> {
+fn do_game(display_cache: bool, start_guess: &str, start_emoji: &str, judging_criteria_win: &str, judging_criteria_loss: &str, callback: impl Fn(&str, &str) -> Result<GameResponseInner>) -> Result<GameResult> {
     let mut count: u64 = 0;
     let mut prev_guess = start_guess.to_string();
     let mut prev_emoji = start_emoji.to_string();
@@ -119,17 +120,26 @@ fn main() -> Result<()> {
         debug!("custom game oid {oid}");
 
         let game_info = get_custom_game(&client, &oid)?;
-        println!("{} {}{}", "Loaded custom game".blue(), game_info.title.bold().blue(), "!".blue());
+        println!(
+            "{} {}{}{} {} {} {}",
+            "Loaded custom game".blue(),
+            game_info.attribute_data.title.bold().blue(),
+            "! (".blue(),
+            game_info.denormalized_vote_count.bold().blue(),
+            "likes,".blue(),
+            game_info.execution_count.bold().blue(),
+            "plays)".blue()
+        );
 
         loop {
             do_game(
                 false,
-                &game_info.start_word,
-                &game_info.start_emoji,
-                &game_info.judging_criteria,
-                &game_info.judging_criteria_loss,
+                &game_info.attribute_data.start_word,
+                &game_info.attribute_data.start_emoji,
+                &game_info.attribute_data.judging_criteria,
+                &game_info.attribute_data.judging_criteria_loss,
                 |guess, prev_guess| {
-                    let request = WbrCustomGameRequest {
+                    let request = CustomGameRequest {
                         oid: oid.clone(),
                         guess: guess.to_string(),
                         prev: prev_guess.to_string(),
@@ -141,6 +151,15 @@ fn main() -> Result<()> {
             print!("{}", "Play again? [y/N] ".blue());
             if !read_yes_no_prompt(true)? {
                 break;
+            }
+        }
+
+        if !game_info.has_liked() {
+            print!("{}", "Like this custom game? [y/N] ".blue());
+            if read_yes_no_prompt(true)? {
+                if !like_custom_game(&client, &game_info.id)? {
+                    println!("{}", "like unsuccessful".red());
+                }
             }
         }
     } else {
@@ -155,7 +174,7 @@ fn main() -> Result<()> {
                 "beats",
                 "does not beat",
                 |guess, prev_guess| {
-                    let request = WbrGameRequest {
+                    let request = GameRequest {
                         gid: gid.clone(),
                         guess: guess.to_string(),
                         prev: prev_guess.to_string(),
@@ -167,12 +186,14 @@ fn main() -> Result<()> {
             print!("{}", "Would you like to submit to the leaderboard? [y/N] ".blue());
             if read_yes_no_prompt(true)? {
                 if uid.is_some() {
-                    let leaderboard_request = WbrAuthenticatedLeaderboardRequest {
+                    let leaderboard_request = AuthenticatedLeaderboardRequest {
                         gid: gid.clone(),
                         score: result.score,
                         text: format!("{} {} did not beat {} {}", result.guess, result.emoji, result.prev_guess, result.prev_emoji),
                     };
-                    submit_score_authenticated(&client, leaderboard_request)?;
+                    if !submit_score_authenticated(&client, leaderboard_request)? {
+                        println!("{}", "submit score unsuccessful".red());
+                    }
                 } else {
                     let mut buf = String::new();
                     let initials = loop {
@@ -187,13 +208,15 @@ fn main() -> Result<()> {
                         print!("{}", "Must be 3 characters!".red());
                     };
 
-                    let leaderboard_request = WbrLeaderboardRequest {
+                    let leaderboard_request = LeaderboardRequest {
                         gid: gid.clone(),
                         initials,
                         score: result.score,
                         text: format!("{} {} did not beat {} {}", result.guess, result.emoji, result.prev_guess, result.prev_emoji),
                     };
-                    submit_score(&client, leaderboard_request)?;
+                    if !submit_score(&client, leaderboard_request)? {
+                        println!("{}", "submit score unsuccessful".red());
+                    }
                 }
             }
 
